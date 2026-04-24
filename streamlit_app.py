@@ -5,6 +5,19 @@ from datetime import datetime, timedelta, date
 import random
 import os
 import calendar
+import io
+
+# --- PDF Reporting Dependencies ---
+# Make sure to run: pip install reportlab
+try:
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, ListFlowable, ListItem
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+except ImportError:
+    st.error("ReportLab library not found. Please run 'pip install reportlab' to enable PDF reporting.")
+    st.stop()
+
 
 # --- CONFIGURATION & INITIALIZATION ---
 st.set_page_config(
@@ -131,6 +144,54 @@ def calculate_streaks(habit):
     
     return {'currentStreak': current_streak, 'longestStreak': longest_streak}
 
+def generate_pdf_report(completed_habits, completed_tasks, planned_tasks):
+    """Uses reportlab to generate a PDF report in memory."""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=(8.5 * inch, 11 * inch), topMargin=0.5*inch, bottomMargin=0.5*inch)
+    styles = getSampleStyleSheet()
+    
+    story = []
+    
+    # Title
+    today = get_today()
+    tomorrow = today + timedelta(days=1)
+    title = f"Daily Report - {today.strftime('%A, %B %d, %Y')}"
+    story.append(Paragraph(title, styles['h1']))
+    story.append(Spacer(1, 0.25 * inch))
+
+    # Habits Completed
+    story.append(Paragraph("✅ Habits Completed Today", styles['h2']))
+    if completed_habits:
+        for habit in completed_habits:
+            p = Paragraph(f"{habit['emoji']} {habit['name']}", styles['Normal'])
+            story.append(ListItem(p, bulletColor=colors.green, value='•'))
+    else:
+        story.append(Paragraph("<i>No habits completed today.</i>", styles['Italic']))
+    story.append(Spacer(1, 0.25 * inch))
+
+    # Tasks Completed
+    story.append(Paragraph("✅ Tasks Completed Today", styles['h2']))
+    if completed_tasks:
+        for task in completed_tasks:
+            p = Paragraph(task['text'], styles['Normal'])
+            story.append(ListItem(p, bulletColor=colors.green, value='•'))
+    else:
+        story.append(Paragraph("<i>No tasks completed today.</i>", styles['Italic']))
+    story.append(Spacer(1, 0.25 * inch))
+
+    # Plan for Tomorrow
+    story.append(Paragraph(f"🗓️ Plan for Tomorrow ({tomorrow.strftime('%Y-%m-%d')})", styles['h2']))
+    if planned_tasks:
+        for task in planned_tasks:
+            p = Paragraph(f"{task['text']} (Priority: {task['priority']})", styles['Normal'])
+            story.append(ListItem(p, bulletColor=colors.black, value='☐'))
+    else:
+        story.append(Paragraph("<i>No tasks planned for tomorrow.</i>", styles['Italic']))
+    
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
 # --- CALLBACK FUNCTIONS ---
 
 def toggle_habit_completion(habit_id):
@@ -253,52 +314,29 @@ def display_tasks_section():
         st.markdown("---")
 
 def display_reporting_section():
-    """Generates and displays a downloadable report."""
+    """Generates and displays a downloadable PDF report."""
     st.header("📈 Daily Reporting")
+    st.info("Generate a PDF summary of your daily progress and tomorrow's plan.")
+    
     state = st.session_state.state
     today = get_today()
     tomorrow = today + timedelta(days=1)
     
     # 1. Gather data
     completed_habits = [h for h in state.get('habits', []) if today in h.get('completions', [])]
-    completed_tasks = [t for t in state.get('tasks', []) if t.get('done')]
+    # Show only tasks completed today for the report
+    completed_tasks = [t for t in state.get('tasks', []) if t.get('done') and parse_task_date(t['date']) == today]
     planned_tasks = [t for t in state.get('tasks', []) if parse_task_date(t['date']) == tomorrow and not t.get('done')]
 
-    # 2. Generate report string
-    report_lines = [f"# Daily Report - {today.strftime('%A, %B %d, %Y')}", ""]
-    
-    report_lines.append("## ✅ Habits Completed Today")
-    if completed_habits:
-        for habit in completed_habits:
-            report_lines.append(f"- {habit['emoji']} {habit['name']}")
-    else:
-        report_lines.append("_No habits completed today._")
-    report_lines.append("")
+    # 2. Generate PDF in memory
+    pdf_buffer = generate_pdf_report(completed_habits, completed_tasks, planned_tasks)
 
-    report_lines.append("## ✅ Tasks Completed Today")
-    if completed_tasks:
-        for task in completed_tasks:
-            report_lines.append(f"- {task['text']}")
-    else:
-        report_lines.append("_No tasks completed today._")
-    report_lines.append("")
-
-    report_lines.append(f"## 🗓️ Plan for Tomorrow ({tomorrow.strftime('%Y-%m-%d')})")
-    if planned_tasks:
-        for task in planned_tasks:
-            report_lines.append(f"- [ ] {task['text']} (Priority: {task['priority']})")
-    else:
-        report_lines.append("_No tasks planned for tomorrow._")
-    
-    report_string = "\n".join(report_lines)
-
-    # 3. Display UI
-    st.text_area("Report Preview", value=report_string, height=300, disabled=True)
+    # 3. Display Download button
     st.download_button(
-        label="📥 Download Report",
-        data=report_string,
-        file_name=f"momentum_report_{today.isoformat()}.txt",
-        mime="text/plain"
+        label="📥 Download PDF Report",
+        data=pdf_buffer,
+        file_name=f"momentum_report_{today.isoformat()}.pdf",
+        mime="application/pdf"
     )
 
 def display_habit_management():
