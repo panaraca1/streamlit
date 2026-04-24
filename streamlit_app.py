@@ -89,6 +89,13 @@ def get_today():
     """Returns today's date."""
     return date.today()
 
+def parse_task_date(date_str):
+    """Safely parses an ISO date string into a date object."""
+    try:
+        return datetime.fromisoformat(date_str).date()
+    except (TypeError, ValueError):
+        return None
+
 # --- CORE LOGIC & CALCULATIONS ---
 
 def calculate_streaks(habit):
@@ -201,25 +208,21 @@ def display_tasks_section():
     with col2:
         with st.popover("➕"):
             st.markdown("**Add a new task**")
-            # This is the form from your prompt, adapted for this app
             today = get_today()
-            tomorrow = today + timedelta(days=1)
             with st.form("add_task_form", clear_on_submit=True):
                 new_task_text = st.text_input("New task", placeholder="e.g. Prepare meeting notes")
                 c1, c2 = st.columns(2)
                 new_prio = c1.selectbox("Priority", ["high", "medium", "low"])
-                new_task_date = c2.date_input("Date", value=today) # Defaults to today
+                new_task_date = c2.date_input("Date", value=today)
                 
                 if st.form_submit_button("Add Task", type="primary"):
                     if new_task_text.strip():
                         new_task = {
-                            "id":       int(datetime.now().timestamp() * 1000), "text":     new_task_text.strip(),
-                            "done":     False, "date":     new_task_date.isoformat(),
-                            "priority": new_prio,
+                            "id": int(datetime.now().timestamp() * 1000), "text": new_task_text.strip(),
+                            "done": False, "date": new_task_date.isoformat(), "priority": new_prio,
                         }
                         state.setdefault("tasks", []).append(new_task)
-                        save_state(state) # Use the app's save function
-                        st.rerun()
+                        save_state(state); st.rerun()
                     else:
                         st.warning("Task cannot be empty.")
     
@@ -229,34 +232,74 @@ def display_tasks_section():
         return
         
     prio_map = {"high": "🔥", "medium": "🔸", "low": "🔹"}
-    parse_date = lambda d_str: datetime.fromisoformat(d_str).date()
-
-    # Sort tasks by date, then by priority index
-    tasks.sort(key=lambda t: (parse_date(t['date']), ["high", "medium", "low"].index(t['priority'])))
+    tasks.sort(key=lambda t: (parse_task_date(t['date']), ["high", "medium", "low"].index(t['priority'])))
     
     for task in tasks:
-        task_date, is_done = parse_date(task['date']), task['done']
+        task_date, is_done = parse_task_date(task['date']), task['done']
         
         cols = st.columns([1, 6, 1])
-        with cols[0]:
-            st.checkbox("done", value=is_done, key=f"task_check_{task['id']}", label_visibility="collapsed", on_change=toggle_task_completion, args=(task['id'],))
+        cols[0].checkbox("done", value=is_done, key=f"task_check_{task['id']}", label_visibility="collapsed", on_change=toggle_task_completion, args=(task['id'],))
         with cols[1]:
             task_text_display = f"~~{task['text']}~~" if is_done else task['text']
             st.markdown(f"{prio_map.get(task['priority'], '')} {task_text_display}")
             
-            date_color = "default"
-            date_display_text = f"🗓️ {task_date.strftime('%b %d')}"
+            date_color, date_text = "default", f"🗓️ {task_date.strftime('%b %d')}"
             if task_date < get_today() and not is_done:
-                date_color = "red"
-                date_display_text = f"⚠️ **OVERDUE** ({task_date.strftime('%b %d')})"
-            st.markdown(f":{date_color}[{date_display_text}]")
-
-        with cols[2]:
-            if st.button("🗑️", key=f"del_task_{task['id']}", help="Delete task"):
-                state['tasks'] = [t for t in state['tasks'] if t['id'] != task['id']]
-                save_state(state)
-                st.rerun()
+                date_color, date_text = "red", f"⚠️ **OVERDUE** ({task_date.strftime('%b %d')})"
+            st.markdown(f":{date_color}[{date_text}]")
+        if cols[2].button("🗑️", key=f"del_task_{task['id']}", help="Delete task"):
+            state['tasks'] = [t for t in state['tasks'] if t['id'] != task['id']]
+            save_state(state); st.rerun()
         st.markdown("---")
+
+def display_reporting_section():
+    """Generates and displays a downloadable report."""
+    st.header("📈 Daily Reporting")
+    state = st.session_state.state
+    today = get_today()
+    tomorrow = today + timedelta(days=1)
+    
+    # 1. Gather data
+    completed_habits = [h for h in state.get('habits', []) if today in h.get('completions', [])]
+    completed_tasks = [t for t in state.get('tasks', []) if t.get('done')]
+    planned_tasks = [t for t in state.get('tasks', []) if parse_task_date(t['date']) == tomorrow and not t.get('done')]
+
+    # 2. Generate report string
+    report_lines = [f"# Daily Report - {today.strftime('%A, %B %d, %Y')}", ""]
+    
+    report_lines.append("## ✅ Habits Completed Today")
+    if completed_habits:
+        for habit in completed_habits:
+            report_lines.append(f"- {habit['emoji']} {habit['name']}")
+    else:
+        report_lines.append("_No habits completed today._")
+    report_lines.append("")
+
+    report_lines.append("## ✅ Tasks Completed Today")
+    if completed_tasks:
+        for task in completed_tasks:
+            report_lines.append(f"- {task['text']}")
+    else:
+        report_lines.append("_No tasks completed today._")
+    report_lines.append("")
+
+    report_lines.append(f"## 🗓️ Plan for Tomorrow ({tomorrow.strftime('%Y-%m-%d')})")
+    if planned_tasks:
+        for task in planned_tasks:
+            report_lines.append(f"- [ ] {task['text']} (Priority: {task['priority']})")
+    else:
+        report_lines.append("_No tasks planned for tomorrow._")
+    
+    report_string = "\n".join(report_lines)
+
+    # 3. Display UI
+    st.text_area("Report Preview", value=report_string, height=300, disabled=True)
+    st.download_button(
+        label="📥 Download Report",
+        data=report_string,
+        file_name=f"momentum_report_{today.isoformat()}.txt",
+        mime="text/plain"
+    )
 
 def display_habit_management():
     """Renders the UI for adding, editing, and viewing all habits."""
@@ -279,25 +322,23 @@ def display_habit_management():
                             'frequency': new_freq, 'completions': [], 'creationDate': get_today(),
                             'order': len(state['habits']), 'unlockedTrophies': []
                         }
-                        state['habits'].append(new_habit)
-                        save_state(state)
+                        state['habits'].append(new_habit); save_state(state)
                     else:
                         st.error("Please provide both a name and an emoji.")
 
-    if not state['habits']:
-        return
+    if not state.get('habits'): return
         
     for i, habit in enumerate(sorted(state['habits'], key=lambda h: h.get('order', 0))):
         cols = st.columns([1, 4, 1, 1, 1])
         cols[0].markdown(f"<p style='font-size: 1.5rem;'>{habit['emoji']}</p>", unsafe_allow_html=True)
         cols[1].write(habit['name'])
         if i > 0 and cols[2].button("⬆️", key=f"up_{habit['id']}", help="Move up"):
-            state['habits'][i], state['habits'][i-1] = state['habits'][i-1], state['habits'][i]
-            for idx, h in enumerate(state['habits']): h['order'] = idx
+            current, prev = state['habits'][i], state['habits'][i-1]
+            current['order'], prev['order'] = prev.get('order', i-1), current.get('order', i)
             save_state(state); st.rerun()
         if i < len(state['habits']) - 1 and cols[3].button("⬇️", key=f"down_{habit['id']}", help="Move down"):
-            state['habits'][i], state['habits'][i+1] = state['habits'][i+1], state['habits'][i]
-            for idx, h in enumerate(state['habits']): h['order'] = idx
+            current, next_h = state['habits'][i], state['habits'][i+1]
+            current['order'], next_h['order'] = next_h.get('order', i+1), current.get('order', i)
             save_state(state); st.rerun()
         with cols[4]:
              with st.popover("✏️", help="Edit or Delete"):
@@ -305,37 +346,25 @@ def display_habit_management():
                 edited_name = st.text_input("Name", value=habit['name'], key=f"name_{habit['id']}")
                 edited_emoji = st.text_input("Emoji", value=habit['emoji'], key=f"emoji_{habit['id']}")
                 if st.button("Save Changes", key=f"save_{habit['id']}", type="primary"):
-                    habit['name'], habit['emoji'] = edited_name, edited_emoji
-                    save_state(state); st.rerun()
+                    habit['name'], habit['emoji'] = edited_name, edited_emoji; save_state(state); st.rerun()
                 if st.button("Delete Habit", key=f"del_{habit['id']}", type="secondary"):
-                    state['habits'] = [h for h in state['habits'] if h['id'] != habit['id']]
-                    save_state(state); st.rerun()
+                    state['habits'] = [h for h in state['habits'] if h['id'] != habit['id']]; save_state(state); st.rerun()
 
 def display_statistics():
     """Renders the statistics dashboard."""
-    state = st.session_state.state
-    st.header("📊 Statistics")
-    
-    if not state.get('habits'):
-        st.info("No data to show. Complete some habits first!")
-        return
+    state = st.session_state.state; st.header("📊 Statistics")
+    if not state.get('habits'): st.info("No data to show. Complete some habits first!"); return
 
-    today = get_today()
-    total_completions, s_day_comp, s_day_opp, t_day_comp, t_day_opp = 0, 0, 0, 0, 0
+    today = get_today(); total_completions, s_day_comp, s_day_opp, t_day_comp, t_day_opp = 0, 0, 0, 0, 0
     habit_stats = []
     for habit in state['habits']:
-        total_completions += len(habit['completions'])
-        creation_date = habit['creationDate']
+        total_completions += len(habit['completions']); creation_date = habit['creationDate']
         for i in range(30):
             d = today - timedelta(days=i)
             if d >= creation_date:
-                if i < 7:
-                    s_day_opp += 1
-                    if d in habit['completions']: s_day_comp += 1
-                t_day_opp += 1
-                if d in habit['completions']: t_day_comp += 1
-        days_since_creation = (today - creation_date).days + 1
-        rate_days = min(30, days_since_creation)
+                if i < 7: s_day_opp += 1; s_day_comp += 1 if d in habit['completions'] else 0
+                t_day_opp += 1; t_day_comp += 1 if d in habit['completions'] else 0
+        days_since_creation = (today - creation_date).days + 1; rate_days = min(30, days_since_creation)
         recent_completions = len([c for c in habit['completions'] if c >= (today - timedelta(days=30))])
         completion_rate = (recent_completions / rate_days * 100) if rate_days > 0 else 0
         habit_stats.append({**habit, 'completionRate': completion_rate})
@@ -343,43 +372,29 @@ def display_statistics():
     s_day_rate = (s_day_comp / s_day_opp * 100) if s_day_opp > 0 else 0
     t_day_rate = (t_day_comp / t_day_opp * 100) if t_day_opp > 0 else 0
 
-    cols = st.columns(3)
-    cols[0].metric("7-Day Rate", f"{s_day_rate:.0f}%")
-    cols[1].metric("30-Day Rate", f"{t_day_rate:.0f}%")
-    cols[2].metric("Total Completions", total_completions)
-
+    cols = st.columns(3); cols[0].metric("7-Day Rate", f"{s_day_rate:.0f}%"); cols[1].metric("30-Day Rate", f"{t_day_rate:.0f}%"); cols[2].metric("Total Completions", total_completions)
     if habit_stats:
         habit_stats.sort(key=lambda x: x['completionRate'], reverse=True)
         best, worst = habit_stats[0], habit_stats[-1]
-        st.markdown("---")
-        cols = st.columns(2)
+        st.markdown("---"); cols = st.columns(2)
         cols[0].subheader("✅ Best Habit"); cols[0].markdown(f"**{best['emoji']} {best['name']}** ({best['completionRate']:.0f}%)")
         cols[1].subheader("💪 Needs Work"); cols[1].markdown(f"**{worst['emoji']} {worst['name']}** ({worst['completionRate']:.0f}%)")
 
 def display_trophies():
     """Renders the trophy shelf."""
-    state = st.session_state.state
-    st.header("🏆 Trophy Shelf")
-
+    state = st.session_state.state; st.header("🏆 Trophy Shelf")
     trophy_defs = [
         {'id': 'streak-3', 'name': '3-Day Streak', 'icon': '🥉', 'check': lambda h, _: calculate_streaks(h)['longestStreak'] >= 3},
         {'id': 'streak-7', 'name': '7-Day Streak', 'icon': '🥈', 'check': lambda h, _: calculate_streaks(h)['longestStreak'] >= 7},
         {'id': 'streak-30', 'name': '30-Day Streak', 'icon': '🥇', 'check': lambda h, _: calculate_streaks(h)['longestStreak'] >= 30},
         {'id': 'complete-100', 'name': '100 Completions', 'icon': '💯', 'check': lambda _, s: s['total_completions'] >= 100}
     ]
-
-    total_completions = sum(len(h.get('completions', [])) for h in state.get('habits', []))
-    global_stats = {'total_completions': total_completions}
+    total_completions = sum(len(h.get('completions', [])) for h in state.get('habits', [])); global_stats = {'total_completions': total_completions}
     earned_trophies = {t['id'] for t in trophy_defs for h in state.get('habits', []) if t['check'](h, global_stats)}
-
     cols = st.columns(4)
     for i, t in enumerate(trophy_defs):
-        is_earned = t['id'] in earned_trophies
-        style = "opacity: 1;" if is_earned else "opacity: 0.3; filter: grayscale(100%);"
-        cols[i % 4].markdown(f"""
-        <div style="text-align: center; {style}">
-            <p style="font-size: 3rem; margin-bottom: 0;">{t['icon']}</p><p><strong>{t['name']}</strong></p>
-        </div>""", unsafe_allow_html=True)
+        is_earned = t['id'] in earned_trophies; style = "opacity: 1;" if is_earned else "opacity: 0.3; filter: grayscale(100%);"
+        cols[i % 4].markdown(f"""<div style="text-align: center; {style}"><p style="font-size: 3rem; margin-bottom: 0;">{t['icon']}</p><p><strong>{t['name']}</strong></p></div>""", unsafe_allow_html=True)
 
 @st.dialog("Habit Details")
 def display_detail_dialog(habit_id):
@@ -388,27 +403,22 @@ def display_detail_dialog(habit_id):
     if not habit: st.error("Habit not found."); return
 
     streaks = calculate_streaks(habit)
-    st.markdown(f"<h1 style='text-align: center;'>{habit['emoji']} {habit['name']}</h1>", unsafe_allow_html=True)
-    cols = st.columns(2)
-    cols[0].metric("🔥 Current Streak", f"{streaks['currentStreak']} Days")
-    cols[1].metric("⭐ Longest Streak", f"{streaks['longestStreak']} Days")
+    st.markdown(f"<h1 style='text-align: center;'>{habit['emoji']} {habit['name']}</h1>", unsafe_allow_html=True); cols = st.columns(2)
+    cols[0].metric("🔥 Current Streak", f"{streaks['currentStreak']} Days"); cols[1].metric("⭐ Longest Streak", f"{streaks['longestStreak']} Days")
     st.subheader("Progress Calendar")
 
     view_date_key = f"view_date_{habit_id}"
     if view_date_key not in st.session_state: st.session_state[view_date_key] = get_today()
-    
     cols = st.columns([1, 2, 1])
     if cols[0].button("◀️"): st.session_state[view_date_key] = st.session_state[view_date_key].replace(day=1) - timedelta(days=1)
     cols[1].markdown(f"<h4 style='text-align: center;'>{st.session_state[view_date_key].strftime('%B %Y')}</h4>", unsafe_allow_html=True)
     if cols[2].button("▶️"): st.session_state[view_date_key] = (st.session_state[view_date_key].replace(day=28) + timedelta(days=4)).replace(day=1)
-    
     st.markdown(generate_calendar_html(habit, st.session_state[view_date_key].year, st.session_state[view_date_key].month), unsafe_allow_html=True)
     st.info("Retroactively marking dates is not supported in this version.")
 
 def generate_calendar_html(habit, year, month):
     """Generates an HTML table representing a calendar for a given habit."""
-    cal = calendar.Calendar()
-    html = """<style>.cal-table{width:100%;border-collapse:collapse;}.cal-th,.cal-td{text-align:center;padding:10px;border:1px solid #4a4a4a;}.cal-day-completed{background-color:#28a745;color:white;}.cal-day-missed{background-color:#fbebee;color:#dc3545;}.cal-day-future{color:#6c757d;}.cal-day-other-month{opacity:0.3;}.cal-today{border:2px solid #28a745 !important;font-weight:bold;}</style><table class="cal-table"><tr><th>S</th><th>M</th><th>T</th><th>W</th><th>T</th><th>F</th><th>S</th></tr><tr>"""
+    cal = calendar.Calendar(); html = """<style>.cal-table{width:100%;border-collapse:collapse;}.cal-th,.cal-td{text-align:center;padding:10px;border:1px solid #4a4a4a;}.cal-day-completed{background-color:#28a745;color:white;}.cal-day-missed{background-color:#fbebee;color:#dc3545;}.cal-day-future{color:#6c757d;}.cal-day-other-month{opacity:0.3;}.cal-today{border:2px solid #28a745 !important;font-weight:bold;}</style><table class="cal-table"><tr><th>S</th><th>M</th><th>T</th><th>W</th><th>T</th><th>F</th><th>S</th></tr><tr>"""
     today, creation_date = get_today(), habit['creationDate']
     for i, day in enumerate(cal.itermonthdates(year, month)):
         classes = ["cal-td"]
@@ -430,8 +440,7 @@ st.markdown("Your personal dashboard for building consistent habits and managing
 if "detail_habit_id" in st.session_state and st.session_state.detail_habit_id is not None:
     display_detail_dialog(st.session_state.detail_habit_id)
     if st.button("Back to Dashboard"):
-        del st.session_state.detail_habit_id
-        st.rerun()
+        del st.session_state.detail_habit_id; st.rerun()
 else:
     with st.expander("✨ Today's Habits", expanded=True):
         display_main_dashboard()
@@ -439,6 +448,8 @@ else:
         display_tasks_section()
     with st.expander("🎯 My Habits"):
         display_habit_management()
+    with st.expander("📈 Daily Reporting"):
+        display_reporting_section()
     with st.expander("📊 Statistics"):
         display_statistics()
     with st.expander("🏆 Trophy Shelf"):
